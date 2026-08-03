@@ -1,0 +1,28 @@
+{
+  "name": "instagram-financial-agents",
+  "version": "0.1.0",
+  "description": "Applicazione locale da terminale per gestire il processo editoriale di una pagina Instagram italiana di educazione finanziaria.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "trends:web": "tsx src/cli/web-trend-scout.ts",
+    "daily-telegram": "tsx src/cli/daily-telegram-digest.ts",
+    "daily-telegram:dry-run": "tsx src/cli/daily-telegram-digest.ts --dry-run",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
