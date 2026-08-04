@@ -33,16 +33,17 @@ export function createDailyDigest(report: TrendReport, generatedAt = new Date())
     .map((idea) => contentIdeaSchema.parse(idea))
     .sort((left, right) => right.total_score - left.total_score || left.id.localeCompare(right.id));
 
-  const carouselIdeas = rankedIdeas.slice(0, 3);
-  const articleIdeas = [...rankedIdeas]
-    .sort(
+  const carouselIdeas = selectIdeasWithPreferredSources(rankedIdeas, ["social-"], 3);
+  const articleIdeas = selectIdeasWithPreferredSources(
+    [...rankedIdeas].sort(
       (left, right) =>
         right.substack_score - left.substack_score ||
         right.total_score - left.total_score ||
         left.id.localeCompare(right.id)
-    )
-    .slice(0, 3)
-    .map(createSubstackArticleIdea);
+    ),
+    ["blog-"],
+    3
+  ).map(createSubstackArticleIdea);
 
   return dailyDigestSchema.parse({
     generated_at: generatedAt.toISOString(),
@@ -56,6 +57,37 @@ export function createDailyDigest(report: TrendReport, generatedAt = new Date())
     carousel_ideas: carouselIdeas,
     substack_article_ideas: articleIdeas
   });
+}
+
+function selectIdeasWithPreferredSources(
+  ideas: ContentIdea[],
+  preferredIdPrefixes: string[],
+  limit: number
+): ContentIdea[] {
+  const selected: ContentIdea[] = [];
+  const selectedIds = new Set<string>();
+
+  for (const prefix of preferredIdPrefixes) {
+    const preferred = ideas.find((idea) => idea.id.startsWith(prefix) && !selectedIds.has(idea.id));
+
+    if (preferred) {
+      selected.push(preferred);
+      selectedIds.add(preferred.id);
+    }
+  }
+
+  for (const idea of ideas) {
+    if (selected.length >= limit) {
+      break;
+    }
+
+    if (!selectedIds.has(idea.id)) {
+      selected.push(idea);
+      selectedIds.add(idea.id);
+    }
+  }
+
+  return selected;
 }
 
 export function createSubstackArticleIdea(idea: ContentIdea): SubstackArticleIdea {
