@@ -8,16 +8,25 @@ import { createTrendReport, saveTrendReport } from "./trend-scout.js";
 import type { ContentIdeaInput, TrendReport } from "../schemas/content-idea.js";
 
 export const WEB_TREND_SCOUT_NOTICE =
-  "Idee generate da feed RSS e pagine web aggiornate. Le fonti sono linkate; i punteggi sono stime editoriali, non dati misurati.";
+  "Idee generate da fonti istituzionali, news, blog e canali social aggiornati. Le fonti sono linkate; salvo le visualizzazioni pubbliche di YouTube, i punteggi sono stime editoriali.";
+
+export const META_SOCIAL_COVERAGE_NOTICE =
+  "Instagram e Facebook richiedono accesso alle API Meta per leggere contenuti e metriche in modo affidabile; senza credenziali non vengono attribuiti dati di engagement.";
 
 const DEFAULT_HISTORY_PATH = "outputs/trend-history.json";
 const MAX_HISTORY_ITEMS = 120;
-const FEED_ITEM_LIMIT = 8;
+const FEED_ITEM_LIMIT = 10;
+const REPORT_ITEM_LIMIT = 12;
 
-type FeedSource = {
+type SourceKind = "institutional" | "news" | "blog" | "social";
+type SocialPlatform = "youtube" | "instagram" | "facebook";
+
+export type FeedSource = {
   label: string;
   url: string;
-  authority: "institutional" | "news-aggregator";
+  kind: SourceKind;
+  platform?: SocialPlatform;
+  market?: "italy" | "international";
 };
 
 type TrendHistory = {
@@ -29,11 +38,15 @@ type FeedItem = {
   key: string;
   sourceLabel: string;
   sourceUrl: string;
-  sourceAuthority: FeedSource["authority"];
+  sourceKind: SourceKind;
+  platform: SocialPlatform | null;
+  market: "italy" | "international";
   title: string;
   link: string;
   summary: string;
   publishedAt: Date | null;
+  views: number | null;
+  reactions: number | null;
 };
 
 type WebTrendScoutOptions = {
@@ -46,42 +59,100 @@ const DEFAULT_FEED_SOURCES: FeedSource[] = [
   {
     label: "ISTAT - ultimi aggiornamenti",
     url: "https://www.istat.it/feed/",
-    authority: "institutional"
+    kind: "institutional"
   },
   {
     label: "ISTAT - prezzi",
     url: "https://www.istat.it/tema/prezzi/feed/",
-    authority: "institutional"
+    kind: "institutional"
   },
   {
     label: "Banca Centrale Europea - comunicati",
     url: "https://www.ecb.europa.eu/rss/press.html",
-    authority: "institutional"
+    kind: "institutional",
+    market: "international"
   },
   {
     label: "Banca Centrale Europea - statistiche",
     url: "https://www.ecb.europa.eu/rss/statpress.html",
-    authority: "institutional"
+    kind: "institutional",
+    market: "international"
   },
   {
     label: "BIS - statistiche e ricerca",
     url: "https://www.bis.org/doclist/all_statistics.rss",
-    authority: "institutional"
+    kind: "institutional",
+    market: "international"
   },
   {
     label: "Google News - risparmio e investimenti Italia",
     url: "https://news.google.com/rss/search?q=finanza%20personale%20Italia%20OR%20risparmio%20OR%20investimenti&hl=it&gl=IT&ceid=IT:it",
-    authority: "news-aggregator"
+    kind: "news"
   },
   {
     label: "Google News - BTP tassi mutui",
     url: "https://news.google.com/rss/search?q=BTP%20OR%20tassi%20OR%20mutui%20Italia&hl=it&gl=IT&ceid=IT:it",
-    authority: "news-aggregator"
+    kind: "news"
   },
   {
     label: "Google News - pensione e previdenza",
     url: "https://news.google.com/rss/search?q=pensione%20OR%20previdenza%20complementare%20Italia&hl=it&gl=IT&ceid=IT:it",
-    authority: "news-aggregator"
+    kind: "news"
+  },
+  {
+    label: "Of Dollars And Data - Nick Maggiulli",
+    url: "https://ofdollarsanddata.com/feed/",
+    kind: "blog",
+    market: "international"
+  },
+  {
+    label: "A Wealth of Common Sense - Ben Carlson",
+    url: "https://awealthofcommonsense.com/feed/",
+    kind: "blog",
+    market: "international"
+  },
+  {
+    label: "HumbleDollar",
+    url: "https://humbledollar.com/feed/",
+    kind: "blog",
+    market: "international"
+  },
+  {
+    label: "Affari Miei",
+    url: "https://www.affarimiei.biz/feed/",
+    kind: "blog"
+  },
+  {
+    label: "YouTube - Mr. RIP",
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-VDfa01El25H9aQzKDNwzQ",
+    kind: "social",
+    platform: "youtube"
+  },
+  {
+    label: "YouTube - Paolo Coletti",
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCan7zXUtAipUspWKeG-_AWQ",
+    kind: "social",
+    platform: "youtube"
+  },
+  {
+    label: "YouTube - IoInvesto",
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCdxW9KZslNPIqlq9AZVZ8_A",
+    kind: "social",
+    platform: "youtube"
+  },
+  {
+    label: "YouTube - Ben Felix",
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCDXTQ8nWmx_EhZ2v-kp7QxA",
+    kind: "social",
+    platform: "youtube",
+    market: "international"
+  },
+  {
+    label: "YouTube - The Plain Bagel",
+    url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCFCEuCsyWP0YkP3CZ3Mr01Q",
+    kind: "social",
+    platform: "youtube",
+    market: "international"
   }
 ];
 
@@ -100,16 +171,15 @@ export async function createWebTrendReport(
   );
   const items = await fetchFeedItems(options.sources ?? DEFAULT_FEED_SOURCES);
   const rankedItems = rankFeedItems(items, history, generatedAt);
-  const ideas = rankedItems
-    .slice(0, 8)
-    .map((item, index) => createIdeaFromFeedItem(item, index, generatedAt));
+  const selectedItems = selectBalancedItems(rankedItems, REPORT_ITEM_LIMIT);
+  const ideas = selectedItems.map((item, index) =>
+    createIdeaFromFeedItem(item, index, generatedAt)
+  );
   const report = createTrendReport(ideas, generatedAt);
 
   return {
     ...report,
-    data_notice: `${WEB_TREND_SCOUT_NOTICE} Item letti: ${items.length}; item mai inviati prioritizzati: ${
-      rankedItems.filter((item) => !history.sent_item_keys.includes(item.key)).length
-    }.`
+    data_notice: createDataNotice(items, selectedItems, history)
   };
 }
 
@@ -121,7 +191,7 @@ export async function saveWebTrendReport(
   const history = await loadTrendHistory(historyPath);
   const items = await fetchFeedItems(DEFAULT_FEED_SOURCES);
   const rankedItems = rankFeedItems(items, history, generatedAt);
-  const selectedItems = rankedItems.slice(0, 8);
+  const selectedItems = selectBalancedItems(rankedItems, REPORT_ITEM_LIMIT);
   const report = createTrendReport(
     selectedItems.map((item, index) => createIdeaFromFeedItem(item, index, generatedAt)),
     generatedAt
@@ -130,9 +200,7 @@ export async function saveWebTrendReport(
   await saveTrendReport(
     {
       ...report,
-      data_notice: `${WEB_TREND_SCOUT_NOTICE} Item letti: ${items.length}; item mai inviati prioritizzati: ${
-        selectedItems.filter((item) => !history.sent_item_keys.includes(item.key)).length
-      }.`
+      data_notice: createDataNotice(items, selectedItems, history)
     },
     outputPath
   );
@@ -150,7 +218,7 @@ export async function fetchFeedItems(sources: FeedSource[]): Promise<FeedItem[]>
     }
   }
 
-  return [...byKey.values()];
+  return [...byKey.values()].filter(isRelevantFeedItem);
 }
 
 function rankFeedItems(items: FeedItem[], history: TrendHistory, now: Date): FeedItem[] {
@@ -163,6 +231,54 @@ function rankFeedItems(items: FeedItem[], history: TrendHistory, now: Date): Fee
       scoreFeedItem(right, now) - scoreFeedItem(left, now) ||
       left.title.localeCompare(right.title)
     );
+  });
+}
+
+function selectBalancedItems(items: FeedItem[], limit: number): FeedItem[] {
+  const selected: FeedItem[] = [];
+  const selectedKeys = new Set<string>();
+  const groups: SourceKind[][] = [["social"], ["blog"], ["institutional", "news"]];
+  const minimumPerGroup = Math.min(3, Math.floor(limit / groups.length));
+
+  for (const group of groups) {
+    const candidates = items.filter((candidate) => group.includes(candidate.sourceKind));
+    const diverse = firstItemPerSource(candidates);
+    const diverseKeys = new Set(diverse.map((item) => item.key));
+    const prioritized = [
+      ...diverse,
+      ...candidates.filter((candidate) => !diverseKeys.has(candidate.key))
+    ];
+
+    for (const item of prioritized.slice(0, minimumPerGroup)) {
+      selected.push(item);
+      selectedKeys.add(item.key);
+    }
+  }
+
+  for (const item of items) {
+    if (selected.length >= limit) {
+      break;
+    }
+
+    if (!selectedKeys.has(item.key)) {
+      selected.push(item);
+      selectedKeys.add(item.key);
+    }
+  }
+
+  return selected;
+}
+
+function firstItemPerSource(items: FeedItem[]): FeedItem[] {
+  const sourceLabels = new Set<string>();
+
+  return items.filter((item) => {
+    if (sourceLabels.has(item.sourceLabel)) {
+      return false;
+    }
+
+    sourceLabels.add(item.sourceLabel);
+    return true;
   });
 }
 
@@ -213,7 +329,10 @@ function normalizeFeedRecord(record: unknown, source: FeedSource): FeedItem | nu
   const title = cleanText(readText(record.title));
   const link = normalizeLink(record.link, source.url);
   const summary = cleanText(
-    readText(record.description) || readText(record.summary) || readText(record.content)
+    readText(record.description) ||
+      readText(record.summary) ||
+      readText(record.content) ||
+      readNestedText(record, ["media:group", "media:description"])
   );
   const publishedAt = parseDate(
     readText(record.pubDate) || readText(record.published) || readText(record.updated)
@@ -227,11 +346,23 @@ function normalizeFeedRecord(record: unknown, source: FeedSource): FeedItem | nu
     key: createStableKey(`${source.label}|${link}|${title}`),
     sourceLabel: source.label,
     sourceUrl: source.url,
-    sourceAuthority: source.authority,
+    sourceKind: source.kind,
+    platform: source.platform ?? null,
+    market: source.market ?? "italy",
     title,
     link,
     summary,
-    publishedAt
+    publishedAt,
+    views: readNestedNumber(
+      record,
+      ["media:group", "media:community", "media:statistics"],
+      "@_views"
+    ),
+    reactions: readNestedNumber(
+      record,
+      ["media:group", "media:community", "media:starRating"],
+      "@_count"
+    )
   };
 }
 
@@ -245,35 +376,45 @@ function createIdeaFromFeedItem(
     ? item.publishedAt.toISOString().slice(0, 10)
     : "data non indicata";
   const totalSeed = scoreFeedItem(item, generatedAt);
+  const sourceModifiers = getSourceModifiers(item);
 
   return {
-    id: `web-${createStableKey(`${item.key}|${generatedAt.toISOString().slice(0, 10)}|${index}`).slice(0, 12)}`,
+    id: `${item.sourceKind}-${createStableKey(
+      `${item.key}|${generatedAt.toISOString().slice(0, 10)}|${index}`
+    ).slice(0, 12)}`,
     title: `${category.titlePrefix}: ${shortenTitle(item.title)}`,
     hook: category.hook,
     angle: `${category.angle} Punto di partenza: "${item.title}".`,
     target_problem: category.targetProblem,
-    why_it_could_work: category.whyItCouldWork,
-    why_now: `La fonte ha pubblicato o aggregato questo aggiornamento il ${readableDate}; va usato come spunto e verificato sul link originale prima del copy.`,
+    why_it_could_work: `${category.whyItCouldWork} ${sourceModifiers.editorialReason}`,
+    why_now: `La fonte ha pubblicato o aggregato questo aggiornamento il ${readableDate}. ${formatEngagementSnapshot(item)} Va usato come spunto e verificato sul link originale prima del copy.`,
     recommended_format: category.format,
     sources_needed: [
       `${item.sourceLabel}: ${item.link}`,
       `Feed consultato: ${item.sourceUrl}`,
+      `Tipo di fonte: ${formatSourceKind(item)}`,
       "Verifica manuale del testo completo prima della pubblicazione"
     ],
     risks: [
       "Non trasformare lo spunto in consulenza finanziaria personalizzata",
       "Distinguere fatti riportati dalla fonte, stime editoriali e assunzioni operative",
-      ...(item.sourceAuthority === "news-aggregator"
-        ? ["Aprire la fonte originale collegata da Google News"]
+      ...(item.sourceKind === "news" ? ["Aprire la fonte originale collegata da Google News"] : []),
+      ...(item.sourceKind === "social" || item.sourceKind === "blog"
+        ? [
+            "Prendere ispirazione dal tema e dalla struttura senza copiare testo, titolo o creativita'"
+          ]
+        : []),
+      ...(item.market === "international"
+        ? ["Adattare esempi, fiscalita', previdenza e prodotti al contesto italiano"]
         : [])
     ],
-    viral_score: clampScore(category.viral + totalSeed * 0.03),
-    utility_score: clampScore(category.utility + totalSeed * 0.04),
-    save_score: clampScore(category.save + totalSeed * 0.04),
-    share_score: clampScore(category.share + totalSeed * 0.03),
+    viral_score: clampScore(category.viral + totalSeed * 0.03 + sourceModifiers.viral),
+    utility_score: clampScore(category.utility + totalSeed * 0.04 + sourceModifiers.utility),
+    save_score: clampScore(category.save + totalSeed * 0.04 + sourceModifiers.save),
+    share_score: clampScore(category.share + totalSeed * 0.03 + sourceModifiers.share),
     comment_score: clampScore(category.comment + totalSeed * 0.03),
     timeliness_score: clampScore(category.timeliness + totalSeed * 0.05),
-    substack_score: clampScore(category.substack + totalSeed * 0.04)
+    substack_score: clampScore(category.substack + totalSeed * 0.04 + sourceModifiers.substack)
   };
 }
 
@@ -288,7 +429,6 @@ function classifyItem(item: FeedItem) {
       "crypto",
       "cripto",
       "bitcoin",
-      "ai",
       "intelligenza artificiale"
     ])
   ) {
@@ -400,12 +540,65 @@ function classifyItem(item: FeedItem) {
   };
 }
 
+function isRelevantFeedItem(item: FeedItem): boolean {
+  if (item.sourceKind === "blog" || item.sourceKind === "social") {
+    return true;
+  }
+
+  return containsAny(`${item.title} ${item.summary}`.toLowerCase(), [
+    "risparm",
+    "invest",
+    "budget",
+    "prezz",
+    "inflazione",
+    "consum",
+    "energia",
+    "salari",
+    "redditi",
+    "lavoro",
+    "occupaz",
+    "commercio al dettaglio",
+    "btp",
+    "titoli di stato",
+    "tassi",
+    "mutui",
+    "deposit",
+    "banc",
+    "credito",
+    "debito",
+    "rendiment",
+    "obbligaz",
+    "mercati",
+    "pension",
+    "previdenza",
+    "fiscal",
+    "truff",
+    "frode",
+    "crypto",
+    "etf",
+    "portfolio",
+    "household",
+    "income",
+    "wealth",
+    "money",
+    "retirement"
+  ]);
+}
+
 function scoreFeedItem(item: FeedItem, now: Date): number {
   const ageDays = item.publishedAt
     ? Math.max(0, (now.getTime() - item.publishedAt.getTime()) / 86_400_000)
     : 12;
   const recency = Math.max(0, 10 - ageDays * 0.8);
-  const authority = item.sourceAuthority === "institutional" ? 1.2 : 0.6;
+  const sourceQuality =
+    item.sourceKind === "institutional"
+      ? 1.2
+      : item.sourceKind === "blog"
+        ? 1
+        : item.sourceKind === "social"
+          ? 0.8
+          : 0.6;
+  const publicEngagement = scorePublicEngagement(item, ageDays);
   const relevance = containsAny(`${item.title} ${item.summary}`.toLowerCase(), [
     "risparm",
     "invest",
@@ -423,7 +616,103 @@ function scoreFeedItem(item: FeedItem, now: Date): number {
     ? 1.4
     : 0;
 
-  return recency + authority + relevance;
+  return recency + sourceQuality + publicEngagement + relevance;
+}
+
+function scorePublicEngagement(item: FeedItem, ageDays: number): number {
+  if (item.platform !== "youtube" || item.views === null) {
+    return 0;
+  }
+
+  const viewsPerDay = item.views / Math.max(1, ageDays);
+  return Math.min(2.5, Math.max(0, Math.log10(Math.max(1, viewsPerDay)) - 1));
+}
+
+function getSourceModifiers(item: FeedItem) {
+  if (item.sourceKind === "social") {
+    const engagementBonus =
+      item.views === null ? 0 : Math.min(0.8, Math.log10(item.views + 1) * 0.14);
+
+    return {
+      viral: 0.6 + engagementBonus,
+      utility: 0,
+      save: 0.2,
+      share: 0.5,
+      substack: 0,
+      editorialReason:
+        "Il tema arriva da un formato social gia' esposto a un pubblico ampio; il segnale aiuta a scegliere l'angolo, non prova che funzionera' sul tuo profilo."
+    };
+  }
+
+  if (item.sourceKind === "blog") {
+    return {
+      viral: 0,
+      utility: 0.3,
+      save: 0.2,
+      share: 0,
+      substack: 0.7,
+      editorialReason:
+        "Il formato lungo offre una tesi e un ragionamento utili da adattare al pubblico italiano."
+    };
+  }
+
+  if (item.sourceKind === "institutional") {
+    return {
+      viral: 0,
+      utility: 0.4,
+      save: 0.2,
+      share: 0,
+      substack: 0.2,
+      editorialReason: "La fonte primaria rafforza la verificabilita' del contenuto."
+    };
+  }
+
+  return {
+    viral: 0.1,
+    utility: 0,
+    save: 0,
+    share: 0.1,
+    substack: 0.1,
+    editorialReason:
+      "La copertura giornalistica segnala attenzione sul tema, da confermare sulla fonte originale."
+  };
+}
+
+function formatEngagementSnapshot(item: FeedItem): string {
+  if (item.platform !== "youtube" || item.views === null) {
+    return "Non sono disponibili metriche pubbliche affidabili per questo elemento.";
+  }
+
+  const reactionText = item.reactions === null ? "" : ` e ${item.reactions} valutazioni pubbliche`;
+  return `Il feed YouTube riporta ${item.views} visualizzazioni${reactionText} al momento della scansione.`;
+}
+
+function formatSourceKind(item: FeedItem): string {
+  if (item.sourceKind === "social") {
+    return `social (${item.platform ?? "piattaforma non indicata"})`;
+  }
+
+  return item.sourceKind;
+}
+
+function createDataNotice(
+  items: FeedItem[],
+  selectedItems: FeedItem[],
+  history: TrendHistory
+): string {
+  const counts = countBySourceKind(items);
+  const unseenSelected = selectedItems.filter(
+    (item) => !history.sent_item_keys.includes(item.key)
+  ).length;
+
+  return `${WEB_TREND_SCOUT_NOTICE} Item letti: ${items.length} (istituzionali: ${counts.institutional}, news: ${counts.news}, blog: ${counts.blog}, social: ${counts.social}); idee selezionate mai inviate: ${unseenSelected}. ${META_SOCIAL_COVERAGE_NOTICE}`;
+}
+
+function countBySourceKind(items: FeedItem[]): Record<SourceKind, number> {
+  return items.reduce<Record<SourceKind, number>>(
+    (counts, item) => ({ ...counts, [item.sourceKind]: counts[item.sourceKind] + 1 }),
+    { institutional: 0, news: 0, blog: 0, social: 0 }
+  );
 }
 
 async function loadTrendHistory(path: string): Promise<TrendHistory> {
@@ -495,6 +784,39 @@ function normalizeLink(value: unknown, fallbackUrl: string): string {
   return fallbackUrl;
 }
 
+function readNestedText(value: unknown, path: string[]): string {
+  let current: unknown = value;
+
+  for (const segment of path) {
+    if (!isRecord(current)) {
+      return "";
+    }
+
+    current = current[segment];
+  }
+
+  return readText(current);
+}
+
+function readNestedNumber(value: unknown, path: string[], attribute: string): number | null {
+  let current: unknown = value;
+
+  for (const segment of path) {
+    if (!isRecord(current)) {
+      return null;
+    }
+
+    current = current[segment];
+  }
+
+  if (!isRecord(current)) {
+    return null;
+  }
+
+  const numericValue = Number(current[attribute]);
+  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
+}
+
 function readText(value: unknown): string {
   if (typeof value === "string" || typeof value === "number") {
     return String(value);
@@ -525,7 +847,13 @@ function decodeBasicEntities(value: string): string {
     .replaceAll("&#39;", "'")
     .replaceAll("&apos;", "'")
     .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">");
+    .replaceAll("&gt;", ">")
+    .replace(/&#(\d+);/g, (match, codePoint: string) => {
+      const parsed = Number(codePoint);
+      return Number.isInteger(parsed) && parsed >= 0 && parsed <= 0x10ffff
+        ? String.fromCodePoint(parsed)
+        : match;
+    });
 }
 
 function parseDate(value: string): Date | null {
